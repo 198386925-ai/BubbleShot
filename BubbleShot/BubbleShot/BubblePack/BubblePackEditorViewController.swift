@@ -229,11 +229,50 @@ final class BubbleView: UIView, UIGestureRecognizerDelegate {
 // MARK: - 自定义药丸分段（选中 = 实心蓝底 + 白字 + 光晕；不用系统 UISegmentedControl）
 // 手动按 frame 排布：嵌套 UIStackView 在手动换行容器里会出现标签压住药丸的错位，
 // 这里按钮位置和内在尺寸全部自己算，不依赖层层传递的内在尺寸。
+// 药丸按钮：填充、描边、光晕全部用 CAShapeLayer 自己画。
+// 实测：iOS 26 模拟器上，按钮自身的 backgroundColor / layer.border 不渲染（字色却正常），
+// 连底下垫普通 UIView 的蓝底也不渲染；但气泡尾巴、虚线边框这些 CAShapeLayer 都正常渲染。
+// 所以药丸的底和边也走 shape 层，不再信任 UIView / UIButton 自身的背景绘制。
+final class PillButton: UIButton {
+    var fillColor: UIColor? { didSet { updateShape() } }
+    var strokeColor: UIColor? { didSet { updateShape() } }
+    var glowColor: UIColor? { didSet { updateShape() } }
+    var glowOpacity: Float = 0 { didSet { updateShape() } }
+    var glowRadius: CGFloat = 0 { didSet { updateShape() } }
+    var glowOffset: CGSize = .zero { didSet { updateShape() } }
+    private let shape = CAShapeLayer()
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        layer.insertSublayer(shape, at: 0)
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateShape()
+    }
+    private func updateShape() {
+        shape.frame = bounds
+        shape.path = UIBezierPath(roundedRect: bounds, cornerRadius: bounds.height / 2).cgPath
+        shape.fillColor = (fillColor ?? .clear).cgColor
+        if let stroke = strokeColor {
+            shape.strokeColor = stroke.cgColor
+            shape.lineWidth = 1
+        } else {
+            shape.strokeColor = nil
+            shape.lineWidth = 0
+        }
+        shape.shadowColor = glowColor?.cgColor
+        shape.shadowOpacity = glowOpacity
+        shape.shadowRadius = glowRadius
+        shape.shadowOffset = glowOffset
+    }
+}
+
 final class PillGroup: UIView {
     var selectedIndex: Int
     var onChange: ((Int) -> Void)?
-    private var buttons: [UIButton] = []
-    private var bgViews: [UIView] = []
+    private var buttons: [PillButton] = []
     private var accent: UIColor = .systemBlue
     private var plain: UIColor = .label
 
@@ -242,19 +281,12 @@ final class PillGroup: UIView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         for (i, t) in titles.enumerated() {
-            // 选中态的蓝底不用按钮自身的 backgroundColor：实测在 iOS 26 模拟器上，
-            // UIButton 的背景色/边框不渲染（字色却正常），改用底下的普通 UIView 画蓝底 ——
-            // 普通 UIView 的背景色在任何情况下都渲染。
-            let bg = UIView()
-            bg.translatesAutoresizingMaskIntoConstraints = false
-            bg.layer.cornerRadius = 999
-            bgViews.append(bg)
-            addSubview(bg)
-            let b = UIButton(type: .custom)
+            // 药丸本身就是 PillButton：选中蓝底、光晕由它自己的 shape 层画，
+            // 不再另垫背景 view（上一轮垫 view 的蓝底同样没渲染出来）。
+            let b = PillButton(frame: .zero)
             b.translatesAutoresizingMaskIntoConstraints = false
             b.setTitle(t, for: .normal)
             b.titleLabel?.font = UIFont.systemFont(ofSize: 13)
-            b.backgroundColor = .clear
             b.tag = i
             b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
             buttons.append(b)
@@ -291,7 +323,6 @@ final class PillGroup: UIView {
         for (i, b) in buttons.enumerated() {
             let s = buttonSize(for: b.currentTitle ?? "")
             let frame = CGRect(x: x, y: (bounds.height - s.height) / 2, width: s.width, height: s.height)
-            bgViews[i].frame = frame
             b.frame = frame
             x += s.width + 2
         }
@@ -306,15 +337,16 @@ final class PillGroup: UIView {
     private func updateColors() {
         for (i, b) in buttons.enumerated() {
             if i == selectedIndex {
-                bgViews[i].backgroundColor = accent
-                bgViews[i].layer.shadowColor = accent.cgColor
-                bgViews[i].layer.shadowOpacity = 0.3
-                bgViews[i].layer.shadowRadius = 8
-                bgViews[i].layer.shadowOffset = CGSize(width: 0, height: 2)
+                b.fillColor = accent
+                b.glowColor = accent
+                b.glowOpacity = 0.3
+                b.glowRadius = 8
+                b.glowOffset = CGSize(width: 0, height: 2)
                 b.setTitleColor(.white, for: .normal)
             } else {
-                bgViews[i].backgroundColor = .clear
-                bgViews[i].layer.shadowOpacity = 0
+                b.fillColor = nil
+                b.glowColor = nil
+                b.glowOpacity = 0
                 b.setTitleColor(plain, for: .normal)
             }
         }
@@ -475,17 +507,17 @@ final class BubblePackEditorViewController: UIViewController,
     private var contentStack: UIStackView!
     private var headerTitle: UILabel!
     private var headerSub: UILabel!
-    private var themeBtn: UIButton!
+    private var themeBtn: PillButton!
     private var toolbar: UIView!
     private var toolbarFlow: FlowLayoutView!
     private var modeSeg: PillGroup!
     private var nightSeg: PillGroup!
     private var viewSeg: PillGroup!
     private var scaleSeg: PillGroup!
-    private var batchBtn: UIButton!
-    private var copyBtn: UIButton!
-    private var clearBtn: UIButton!
-    private var exportBtn: UIButton!
+    private var batchBtn: PillButton!
+    private var copyBtn: PillButton!
+    private var clearBtn: PillButton!
+    private var exportBtn: PillButton!
     private var phoneCard: UIView!
     private var navView: UIView!
     private var chatStack: UIStackView!
@@ -495,7 +527,7 @@ final class BubblePackEditorViewController: UIViewController,
     private var progressBar: UIView!
     private var progressFillW: NSLayoutConstraint!
     private var noteLabel: UILabel!
-    private var otherToggle: UIButton!
+    private var otherToggle: PillButton!
     private var otherCard: UIView!
     private var otherChatStack: UIStackView!
     private var otherNav: UIView!
@@ -607,19 +639,18 @@ final class BubblePackEditorViewController: UIViewController,
         contentStack.addArrangedSubview(row)
     }
 
-    private func pillButton(_ title: String, primary: Bool, insets: UIEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)) -> UIButton {
-        // 不用 .system：iOS 26 上 .system 按钮的背景色/边框不渲染，.custom 走经典绘制才出得来。
-        let b = UIButton(type: .custom)
+    private func pillButton(_ title: String, primary: Bool, insets: UIEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)) -> PillButton {
+        // PillButton：底和边框走 CAShapeLayer，见 PillButton 上的注释。
+        let b = PillButton(frame: .zero)
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.layer.cornerRadius = 999
         b.titleLabel?.font = UIFont.systemFont(ofSize: 13)
         b.contentEdgeInsets = insets
         b.setTitle(title, for: .normal)
         if primary {
-            b.backgroundColor = c("accent")
+            b.fillColor = c("accent")
             b.setTitleColor(.white, for: .normal)
         } else {
-            b.layer.borderWidth = 1
+            b.strokeColor = c("line")
             b.setTitleColor(c("text2"), for: .normal)
         }
         b.setContentHuggingPriority(.required, for: .horizontal)
@@ -664,9 +695,9 @@ final class BubblePackEditorViewController: UIViewController,
         // 网页版主按钮更大：14pt 半粗 + 10/22 内边距 + 蓝色光晕（颜色跟随主题，见 applyTheme）。
         exportBtn.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
         exportBtn.contentEdgeInsets = UIEdgeInsets(top: 10, left: 22, bottom: 10, right: 22)
-        exportBtn.layer.shadowOpacity = 0.32
-        exportBtn.layer.shadowRadius = 12
-        exportBtn.layer.shadowOffset = CGSize(width: 0, height: 3)
+        exportBtn.glowOpacity = 0.32
+        exportBtn.glowRadius = 12
+        exportBtn.glowOffset = CGSize(width: 0, height: 3)
         exportBtn.addTarget(self, action: #selector(doExport), for: .touchUpInside)
         for b in [batchBtn, copyBtn, clearBtn, exportBtn] {
             if let b { toolbarFlow.addSubview(b) }
@@ -843,15 +874,13 @@ final class BubblePackEditorViewController: UIViewController,
     }
 
     private func buildOtherPhone() {
-        otherToggle = UIButton(type: .system)
+        otherToggle = PillButton(frame: .zero)
         otherToggle.translatesAutoresizingMaskIntoConstraints = false
         otherToggle.setTitle("红包 / 语音 / 卡片等其它气泡（32 个，可选项）", for: .normal)
         otherToggle.setTitleColor(c("accent"), for: .normal)
         otherToggle.titleLabel?.font = UIFont.systemFont(ofSize: 13.5, weight: .semibold)
         otherToggle.contentHorizontalAlignment = .left
-        otherToggle.layer.cornerRadius = 999
-        otherToggle.layer.borderWidth = 1
-        otherToggle.layer.masksToBounds = true
+        otherToggle.strokeColor = c("line")
         otherToggle.addTarget(self, action: #selector(toggleOther), for: .touchUpInside)
         contentStack.addArrangedSubview(otherToggle)
 
@@ -1208,7 +1237,7 @@ final class BubblePackEditorViewController: UIViewController,
         headerSub.text = "LiquidUI 商城 · 点气泡放图，自动按规则命名，导出即可上传"
         headerTitle.textColor = c("text")
         headerSub.textColor = c("text3")
-        themeBtn.layer.borderColor = c("line").cgColor
+        themeBtn.strokeColor = c("line")
         themeBtn.setTitleColor(c("text2"), for: .normal)
 
         toolbar.backgroundColor = c("card")
@@ -1220,11 +1249,11 @@ final class BubblePackEditorViewController: UIViewController,
             group.refreshPillColors(accent: c("accent"), plain: c("text2"))
         }
         for b in [batchBtn, copyBtn, clearBtn] {
-            b?.layer.borderColor = c("line").cgColor
+            b?.strokeColor = c("line")
             b?.setTitleColor(c("text2"), for: .normal)
         }
-        exportBtn.backgroundColor = c("accent")
-        exportBtn.layer.shadowColor = c("accent").cgColor
+        exportBtn.fillColor = c("accent")
+        exportBtn.glowColor = c("accent")
 
         summaryLabel.textColor = c("text2")
         progressBar.backgroundColor = c("line")
@@ -1232,7 +1261,7 @@ final class BubblePackEditorViewController: UIViewController,
         noteLabel.layer.borderColor = c("line").cgColor
         noteLabel.backgroundColor = c("card")
 
-        otherToggle.layer.borderColor = c("line").cgColor
+        otherToggle.strokeColor = c("line")
         otherToggle.setTitleColor(c("accent"), for: .normal)
         otherCard.backgroundColor = c("card")
         otherCard.layer.borderColor = c("line").cgColor
