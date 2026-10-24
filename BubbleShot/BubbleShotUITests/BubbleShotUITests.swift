@@ -55,10 +55,18 @@ final class BubbleShotUITests: XCTestCase {
         sleep(1)
         shot("02-chat")
 
-        // 3. Expand the other-bubbles section (found by visible title).
+        // 3. Expand the other-bubbles section (found by visible title),
+        // then scroll into it: the expanded cards sit BELOW the toggle,
+        // shooting immediately would only show the chat viewport again.
         let other = app.buttons["红包 / 语音 / 卡片等其它气泡（32 个，可选项）"]
         XCTAssertTrue(scrollUntilHittable(other, up: true), "other-bubbles toggle never became hittable")
         other.tap()
+        sleep(1)
+        app.swipeUp()
+        sleep(1)
+        app.swipeUp()
+        sleep(1)
+        app.swipeUp()
         sleep(1)
         shot("03-other")
 
@@ -79,9 +87,15 @@ final class BubbleShotUITests: XCTestCase {
         sleep(1)
         shot("05-placed")
 
-        // 6. Scrolled to the bottom: tab bar still visible, note fully visible.
+        // 6. Scrolled to the bottom: keep swiping past the toggle to the
+        // actual page bottom (other card), so the tab bar + note are in frame.
         let otherBottom = app.buttons["红包 / 语音 / 卡片等其它气泡（32 个，可选项）"]
         XCTAssertTrue(scrollUntilHittable(otherBottom, up: true), "bottom of page never reached")
+        app.swipeUp()
+        sleep(1)
+        app.swipeUp()
+        sleep(1)
+        app.swipeUp()
         sleep(1)
         shot("06-bottom")
     }
