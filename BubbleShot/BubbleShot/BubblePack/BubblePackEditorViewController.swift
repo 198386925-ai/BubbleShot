@@ -233,6 +233,7 @@ final class PillGroup: UIView {
     var selectedIndex: Int
     var onChange: ((Int) -> Void)?
     private var buttons: [UIButton] = []
+    private var bgViews: [UIView] = []
     private var accent: UIColor = .systemBlue
     private var plain: UIColor = .label
 
@@ -241,12 +242,19 @@ final class PillGroup: UIView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         for (i, t) in titles.enumerated() {
+            // 选中态的蓝底不用按钮自身的 backgroundColor：实测在 iOS 26 模拟器上，
+            // UIButton 的背景色/边框不渲染（字色却正常），改用底下的普通 UIView 画蓝底 ——
+            // 普通 UIView 的背景色在任何情况下都渲染。
+            let bg = UIView()
+            bg.translatesAutoresizingMaskIntoConstraints = false
+            bg.layer.cornerRadius = 999
+            bgViews.append(bg)
+            addSubview(bg)
             let b = UIButton(type: .custom)
             b.translatesAutoresizingMaskIntoConstraints = false
             b.setTitle(t, for: .normal)
             b.titleLabel?.font = UIFont.systemFont(ofSize: 13)
-            b.layer.cornerRadius = 999
-            b.contentEdgeInsets = UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
+            b.backgroundColor = .clear
             b.tag = i
             b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
             buttons.append(b)
@@ -258,11 +266,18 @@ final class PillGroup: UIView {
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    // 按钮尺寸直接用文字量出来，不依赖 UIButton 的内在尺寸（上一轮蓝底不渲染时，
+    // 字的位置是对的但底没了；尺寸与背景全部自己算，不再猜按钮内部怎么量）。
+    private func buttonSize(for title: String) -> CGSize {
+        let text = (title as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: 13)])
+        return CGSize(width: ceil(text.width) + 28, height: ceil(text.height) + 12)
+    }
+
     override var intrinsicContentSize: CGSize {
         var w: CGFloat = 0
         var h: CGFloat = 0
         for (i, b) in buttons.enumerated() {
-            let s = b.intrinsicContentSize
+            let s = buttonSize(for: b.currentTitle ?? "")
             w += s.width
             h = max(h, s.height)
             if i < buttons.count - 1 { w += 2 }
@@ -273,9 +288,11 @@ final class PillGroup: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         var x: CGFloat = 0
-        for b in buttons {
-            let s = b.intrinsicContentSize
-            b.frame = CGRect(x: x, y: (bounds.height - s.height) / 2, width: s.width, height: s.height)
+        for (i, b) in buttons.enumerated() {
+            let s = buttonSize(for: b.currentTitle ?? "")
+            let frame = CGRect(x: x, y: (bounds.height - s.height) / 2, width: s.width, height: s.height)
+            bgViews[i].frame = frame
+            b.frame = frame
             x += s.width + 2
         }
     }
@@ -289,16 +306,16 @@ final class PillGroup: UIView {
     private func updateColors() {
         for (i, b) in buttons.enumerated() {
             if i == selectedIndex {
-                b.backgroundColor = accent
+                bgViews[i].backgroundColor = accent
+                bgViews[i].layer.shadowColor = accent.cgColor
+                bgViews[i].layer.shadowOpacity = 0.3
+                bgViews[i].layer.shadowRadius = 8
+                bgViews[i].layer.shadowOffset = CGSize(width: 0, height: 2)
                 b.setTitleColor(.white, for: .normal)
-                b.layer.shadowColor = accent.cgColor
-                b.layer.shadowOpacity = 0.3
-                b.layer.shadowRadius = 8
-                b.layer.shadowOffset = CGSize(width: 0, height: 2)
             } else {
-                b.backgroundColor = .clear
+                bgViews[i].backgroundColor = .clear
+                bgViews[i].layer.shadowOpacity = 0
                 b.setTitleColor(plain, for: .normal)
-                b.layer.shadowOpacity = 0
             }
         }
     }
@@ -591,7 +608,8 @@ final class BubblePackEditorViewController: UIViewController,
     }
 
     private func pillButton(_ title: String, primary: Bool, insets: UIEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)) -> UIButton {
-        let b = UIButton(type: .system)
+        // 不用 .system：iOS 26 上 .system 按钮的背景色/边框不渲染，.custom 走经典绘制才出得来。
+        let b = UIButton(type: .custom)
         b.translatesAutoresizingMaskIntoConstraints = false
         b.layer.cornerRadius = 999
         b.titleLabel?.font = UIFont.systemFont(ofSize: 13)
