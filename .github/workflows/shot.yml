@@ -1,0 +1,56 @@
+name: BubbleShot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  shot:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List project
+        run: xcodebuild -list -project BubbleShot/BubbleShot.xcodeproj
+
+      - name: Pick simulator
+        id: sim
+        run: |
+          xcrun simctl list devices available -j > /tmp/devices.json
+          NAME=$(python3 -c "
+          import json
+          d = json.load(open('/tmp/devices.json'))['devices']
+          phones = [x for v in d.values() for x in v if 'iPhone' in x['name'] and x['isAvailable']]
+          print(next((x['name'] for x in phones if x['name'] == 'iPhone 16'), phones[0]['name'] if phones else ''))
+          ")
+          if [ -z "$NAME" ]; then echo "No available iPhone simulator found"; exit 1; fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Picked: $NAME"
+
+      - name: Boot simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)['devices']
+          phones = [x for v in d.values() for x in v if 'iPhone' in x['name'] and x['isAvailable']]
+          print(next((x['udid'] for x in phones if x['name'] == '${{ steps.sim.outputs.name }}'), phones[0]['udid']))
+          ")
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b || true
+
+      - name: Run UI tests
+        run: |
+          xcodebuild test -project BubbleShot/BubbleShot.xcodeproj -scheme BubbleShot -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" -resultBundlePath shots.xcresult CODE_SIGNING_ALLOWED=NO
+
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p shots
+          xcrun xcresulttool export attachments --path shots.xcresult --output-path shots || true
+          find shots -type f | head -50
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bubble-screenshots
+          path: shots/
