@@ -65,6 +65,9 @@ final class BubbleView: UIView, UIGestureRecognizerDelegate {
     var onDelete: (() -> Void)?
 
     private var tail: CAShapeLayer?
+    private var dashedBorder: CAShapeLayer?
+    private var dashedColor: UIColor?
+    private var dashedWidth: CGFloat = 1.5
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -129,7 +132,7 @@ final class BubbleView: UIView, UIGestureRecognizerDelegate {
         placeholder.isHidden = true
         deleteBtn.isHidden = false
         backgroundColor = .clear
-        layer.borderWidth = 0
+        setDashedBorder(nil)
         redrawTail()
     }
 
@@ -139,25 +142,46 @@ final class BubbleView: UIView, UIGestureRecognizerDelegate {
         placeholder.isHidden = false
         placeholder.text = text
         deleteBtn.isHidden = true
-        if !isOther {
-            layer.borderWidth = 1.5
-            layer.borderColor = bubbleColor(hex: "#c2c7cd").cgColor
-        }
+        // 边框不再这里画：由 colorBubble 按日间/夜间统一画虚线（见 setDashedBorder），
+        // 否则夜间会被这里写死的浅色实线盖掉。
         redrawTail()
     }
 
     func applyBubbleColor(_ color: UIColor, border: UIColor?) {
         if imageView.isHidden {
             backgroundColor = color
-            if let border {
-                layer.borderWidth = 1.5
-                layer.borderColor = border.cgColor
-            } else {
-                layer.borderWidth = 0
-            }
+            setDashedBorder(border, width: 1.5)
+        } else {
+            setDashedBorder(nil)
         }
         tailColor = color
         redrawTail()
+    }
+
+    /// 空心气泡的边框：网页版是虚线（不是实线），这里用虚线 shape 层画。
+    /// 颜色跟随手机日间/夜间（文字与非遮罩其它气泡：浅 #c2c7cd / 夜 #6a7079；
+    /// 遮罩类 1px：浅 #b6bdc6 / 夜 #565c66）。
+    func setDashedBorder(_ color: UIColor?, width: CGFloat = 1.5) {
+        dashedColor = color
+        dashedWidth = width
+        updateDashedBorder()
+    }
+
+    private func updateDashedBorder() {
+        dashedBorder?.removeFromSuperlayer()
+        dashedBorder = nil
+        guard let color = dashedColor, bounds.width > 0, bounds.height > 0 else { return }
+        let inset = dashedWidth / 2
+        let path = UIBezierPath(roundedRect: bounds.insetBy(dx: inset, dy: inset), cornerRadius: 7)
+        let layer = CAShapeLayer()
+        layer.path = path.cgPath
+        layer.strokeColor = color.cgColor
+        layer.fillColor = UIColor.clear.cgColor
+        layer.lineWidth = dashedWidth
+        layer.lineDashPattern = [4, 3]
+        // 插最底层：背景 < 虚线边框 < 尾巴 < 图片/文字（和网页版的绘制顺序一致）
+        self.layer.insertSublayer(layer, at: 0)
+        dashedBorder = layer
     }
 
     func redrawTail() {
@@ -188,7 +212,8 @@ final class BubbleView: UIView, UIGestureRecognizerDelegate {
         let layer = CAShapeLayer()
         layer.path = path.cgPath
         layer.fillColor = (tailColor ?? backgroundColor)?.cgColor
-        layer.frame = CGRect(x: left ? -w : bounds.width, y: y, width: w, height: h)
+        // 网页版尾巴左右各伸出 7pt（left:-7 / right:-7，宽 8）：底边与气泡边重合 1pt。
+        layer.frame = CGRect(x: left ? -7 : bounds.width - 1, y: y, width: w, height: h)
         // 插到最底层：画在气泡背景上，不盖住图片/文字/删除钮
         self.layer.insertSublayer(layer, at: 0)
         tail = layer
@@ -196,12 +221,15 @@ final class BubbleView: UIView, UIGestureRecognizerDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        updateDashedBorder()
         redrawTail()
     }
 }
 
 // MARK: - 自定义药丸分段（选中 = 实心蓝底 + 白字 + 光晕；不用系统 UISegmentedControl）
-final class PillGroup: UIStackView {
+// 手动按 frame 排布：嵌套 UIStackView 在手动换行容器里会出现标签压住药丸的错位，
+// 这里按钮位置和内在尺寸全部自己算，不依赖层层传递的内在尺寸。
+final class PillGroup: UIView {
     var selectedIndex: Int
     var onChange: ((Int) -> Void)?
     private var buttons: [UIButton] = []
@@ -211,27 +239,46 @@ final class PillGroup: UIStackView {
     init(titles: [String], selected: Int) {
         selectedIndex = selected
         super.init(frame: .zero)
-        axis = .horizontal
-        spacing = 4
-        alignment = .center
+        translatesAutoresizingMaskIntoConstraints = false
         for (i, t) in titles.enumerated() {
             let b = UIButton(type: .custom)
             b.translatesAutoresizingMaskIntoConstraints = false
             b.setTitle(t, for: .normal)
             b.titleLabel?.font = UIFont.systemFont(ofSize: 13)
             b.layer.cornerRadius = 999
-            b.contentEdgeInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
-            b.setContentHuggingPriority(.required, for: .horizontal)
+            b.contentEdgeInsets = UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
             b.tag = i
             b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
             buttons.append(b)
-            addArrangedSubview(b)
+            addSubview(b)
         }
         updateColors()
     }
 
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: CGSize {
+        var w: CGFloat = 0
+        var h: CGFloat = 0
+        for (i, b) in buttons.enumerated() {
+            let s = b.intrinsicContentSize
+            w += s.width
+            h = max(h, s.height)
+            if i < buttons.count - 1 { w += 2 }
+        }
+        return CGSize(width: w, height: h)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        var x: CGFloat = 0
+        for b in buttons {
+            let s = b.intrinsicContentSize
+            b.frame = CGRect(x: x, y: (bounds.height - s.height) / 2, width: s.width, height: s.height)
+            x += s.width + 2
+        }
+    }
 
     func refreshColors(accent: UIColor, plain: UIColor) {
         self.accent = accent
@@ -245,8 +292,8 @@ final class PillGroup: UIStackView {
                 b.backgroundColor = accent
                 b.setTitleColor(.white, for: .normal)
                 b.layer.shadowColor = accent.cgColor
-                b.layer.shadowOpacity = 0.45
-                b.layer.shadowRadius = 5
+                b.layer.shadowOpacity = 0.3
+                b.layer.shadowRadius = 8
                 b.layer.shadowOffset = CGSize(width: 0, height: 2)
             } else {
                 b.backgroundColor = .clear
@@ -261,6 +308,59 @@ final class PillGroup: UIStackView {
         selectedIndex = sender.tag
         updateColors()
         onChange?(selectedIndex)
+    }
+}
+
+// MARK: - 工具栏分组药丸（标签 + 一组或两组药丸按钮，同样手动排布）
+final class GroupContainer: UIView {
+    let label = UILabel()
+    private var groups: [PillGroup]
+
+    init(labelText: String, groups: [PillGroup]) {
+        self.groups = groups
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        layer.cornerRadius = 999
+        label.text = labelText
+        label.font = UIFont.systemFont(ofSize: 12.5)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        for g in groups { addSubview(g) }
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func refreshPillColors(accent: UIColor, plain: UIColor) {
+        for g in groups { g.refreshColors(accent: accent, plain: plain) }
+    }
+
+    override var intrinsicContentSize: CGSize {
+        var w: CGFloat = 12
+        var h: CGFloat = 0
+        let ls = label.intrinsicContentSize
+        w += ls.width
+        h = max(h, ls.height)
+        for g in groups where !g.isHidden {
+            w += 8 + g.intrinsicContentSize.width
+            h = max(h, g.intrinsicContentSize.height)
+        }
+        w += 6
+        h += 8
+        return CGSize(width: w, height: h)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let ls = label.intrinsicContentSize
+        label.frame = CGRect(x: 12, y: (bounds.height - ls.height) / 2, width: ls.width, height: ls.height)
+        var x: CGFloat = 12 + ls.width + 8
+        for g in groups where !g.isHidden {
+            let s = g.intrinsicContentSize
+            g.frame = CGRect(x: x, y: (bounds.height - s.height) / 2, width: s.width, height: s.height)
+            g.layoutIfNeeded()
+            x += s.width + 8
+        }
     }
 }
 
@@ -329,6 +429,7 @@ final class FlowLayoutView: UIView {
             var x: CGFloat = 0
             for (v, s) in r {
                 v.frame = CGRect(x: x, y: y + (h - s.height) / 2, width: s.width, height: s.height)
+                v.layoutIfNeeded()
                 x += s.width + hSpacing
             }
             y += h + vSpacing
@@ -380,6 +481,8 @@ final class BubblePackEditorViewController: UIViewController,
     private var otherToggle: UIButton!
     private var otherCard: UIView!
     private var otherChatStack: UIStackView!
+    private var otherNav: UIView!
+    private var otherInBar: UIView!
 
     private var state: [String: PlacedImage] = [:]
     private var unrecognized: [(name: String, image: UIImage)] = []  // 批量导入时文件名认不出的图：不进任何槽位、也不进 zip
@@ -469,7 +572,7 @@ final class BubblePackEditorViewController: UIViewController,
         let titles = UIStackView(arrangedSubviews: [headerTitle, headerSub])
         titles.axis = .vertical
         titles.spacing = 1
-        themeBtn = pillButton("深/浅配色", primary: false)
+        themeBtn = pillButton("深/浅配色", primary: false, insets: UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14))
         themeBtn.addTarget(self, action: #selector(toggleTheme), for: .touchUpInside)
         row.addSubview(titles)
         row.addSubview(themeBtn)
@@ -479,18 +582,20 @@ final class BubblePackEditorViewController: UIViewController,
             titles.leadingAnchor.constraint(equalTo: row.leadingAnchor),
             titles.topAnchor.constraint(equalTo: row.topAnchor),
             titles.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            // 副标题再长也不许把按钮挤出屏：标题块在按钮左侧截断，副标题折行。
+            titles.trailingAnchor.constraint(lessThanOrEqualTo: themeBtn.leadingAnchor, constant: -12),
             themeBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor),
             themeBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
         ])
         contentStack.addArrangedSubview(row)
     }
 
-    private func pillButton(_ title: String, primary: Bool) -> UIButton {
+    private func pillButton(_ title: String, primary: Bool, insets: UIEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)) -> UIButton {
         let b = UIButton(type: .system)
         b.translatesAutoresizingMaskIntoConstraints = false
         b.layer.cornerRadius = 999
         b.titleLabel?.font = UIFont.systemFont(ofSize: 13)
-        b.contentEdgeInsets = UIEdgeInsets(top: 7, left: 14, bottom: 7, right: 14)
+        b.contentEdgeInsets = insets
         b.setTitle(title, for: .normal)
         if primary {
             b.backgroundColor = c("accent")
@@ -513,6 +618,7 @@ final class BubblePackEditorViewController: UIViewController,
         // 空间不够就折到下一行，绝不压缩截断出 "…"。
         toolbarFlow = FlowLayoutView()
         toolbarFlow.translatesAutoresizingMaskIntoConstraints = false
+        toolbarFlow.hSpacing = 14
 
         modeSeg = PillGroup(titles: ["中文名", "英文名"], selected: 0)
         modeSeg.onChange = { [weak self] _ in self?.modeChanged() }
@@ -537,6 +643,12 @@ final class BubblePackEditorViewController: UIViewController,
         clearBtn = pillButton("清空", primary: false)
         clearBtn.addTarget(self, action: #selector(clearAll), for: .touchUpInside)
         exportBtn = pillButton("导出 zip", primary: true)
+        // 网页版主按钮更大：14pt 半粗 + 10/22 内边距 + 蓝色光晕（颜色跟随主题，见 applyTheme）。
+        exportBtn.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        exportBtn.contentEdgeInsets = UIEdgeInsets(top: 10, left: 22, bottom: 10, right: 22)
+        exportBtn.layer.shadowOpacity = 0.32
+        exportBtn.layer.shadowRadius = 12
+        exportBtn.layer.shadowOffset = CGSize(width: 0, height: 3)
         exportBtn.addTarget(self, action: #selector(doExport), for: .touchUpInside)
         for b in [batchBtn, copyBtn, clearBtn, exportBtn] {
             if let b { toolbarFlow.addSubview(b) }
@@ -544,31 +656,16 @@ final class BubblePackEditorViewController: UIViewController,
 
         toolbar.addSubview(toolbarFlow)
         NSLayoutConstraint.activate([
-            toolbarFlow.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
-            toolbarFlow.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -10),
+            toolbarFlow.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 12),
+            toolbarFlow.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -12),
             toolbarFlow.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 16),
             toolbarFlow.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -16),
         ])
         contentStack.addArrangedSubview(toolbar)
     }
 
-    private func groupWithLabel(_ label: String, views: [UIView]) -> UIView {
-        let g = UIStackView()
-        g.translatesAutoresizingMaskIntoConstraints = false
-        g.axis = .horizontal
-        g.spacing = 8
-        g.alignment = .center
-        g.layer.cornerRadius = 999
-        g.layoutMargins = UIEdgeInsets(top: 4, left: 12, bottom: 4, right: 6)
-        g.isLayoutMarginsRelativeArrangement = true
-        let lb = UILabel()
-        lb.text = label
-        lb.font = UIFont.systemFont(ofSize: 12.5)
-        lb.textColor = c("text3")
-        lb.setContentHuggingPriority(.required, for: .horizontal)
-        g.addArrangedSubview(lb)
-        for v in views { g.addArrangedSubview(v) }
-        return g
+    private func groupWithLabel(_ label: String, views: [PillGroup]) -> GroupContainer {
+        GroupContainer(labelText: label, groups: views)
     }
 
     // MARK: - 手机框
@@ -595,22 +692,28 @@ final class BubblePackEditorViewController: UIViewController,
         more.font = UIFont.systemFont(ofSize: 19)
         phoneTip = UILabel()
         phoneTip.font = UIFont.systemFont(ofSize: 11)
-        let navRow = UIStackView(arrangedSubviews: [back, more, phoneTip])
+        // 网页版结构：返回/更多在左、标题绝对居中、提示在右。
+        // 旧代码把提示塞进通栏横排，长提示会一路压到居中的标题上 —— 改成网页版这样分开。
+        let navRow = UIStackView(arrangedSubviews: [back, more])
         navRow.axis = .horizontal
-        navRow.spacing = 8
+        navRow.spacing = 0
         navRow.alignment = .center
         navView.addSubview(name)
         navView.addSubview(navRow)
+        navView.addSubview(phoneTip)
         name.translatesAutoresizingMaskIntoConstraints = false
         navRow.translatesAutoresizingMaskIntoConstraints = false
+        phoneTip.translatesAutoresizingMaskIntoConstraints = false
+        phoneTip.alpha = 0.65
         NSLayoutConstraint.activate([
             navView.heightAnchor.constraint(equalToConstant: 44),
             name.centerXAnchor.constraint(equalTo: navView.centerXAnchor),
             name.centerYAnchor.constraint(equalTo: navView.centerYAnchor),
             navRow.leadingAnchor.constraint(equalTo: navView.leadingAnchor, constant: 12),
-            navRow.trailingAnchor.constraint(equalTo: navView.trailingAnchor, constant: -12),
             navRow.topAnchor.constraint(equalTo: navView.topAnchor),
             navRow.bottomAnchor.constraint(equalTo: navView.bottomAnchor),
+            phoneTip.trailingAnchor.constraint(equalTo: navView.trailingAnchor, constant: -12),
+            phoneTip.centerYAnchor.constraint(equalTo: navView.centerYAnchor),
         ])
 
         chatStack = UIStackView()
@@ -634,8 +737,8 @@ final class BubblePackEditorViewController: UIViewController,
         box.backgroundColor = c("wxInputBg")
         box.layer.borderColor = c("wxNavLine").cgColor
         // 旧代码里这个输入框没有高度：横排里纵向无内在尺寸会被压成 0 高，
-        // 看起来就是“缺中间输入框” —— 给它 36pt 高，横向仍占满剩余宽度。
-        box.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        // 看起来就是“缺中间输入框” —— 网页版是 32pt 高，横向仍占满剩余宽度。
+        box.heightAnchor.constraint(equalToConstant: 32).isActive = true
         box.setContentHuggingPriority(UILayoutPriority(1), for: .horizontal)
         let emoji = wxInputChip("表情")
         let moreIc = wxInputChip("更多")
@@ -744,6 +847,13 @@ final class BubblePackEditorViewController: UIViewController,
         let nav = UIView()
         nav.translatesAutoresizingMaskIntoConstraints = false
         nav.layer.borderWidth = 1
+        // 网页版其它框的导航栏同样有返回/更多（旧代码只有标题和提示）。
+        let back2 = UILabel()
+        back2.text = "‹"
+        back2.font = UIFont.systemFont(ofSize: 22)
+        let more2 = UILabel()
+        more2.text = "⋯"
+        more2.font = UIFont.systemFont(ofSize: 19)
         let n2 = UILabel()
         n2.text = "微信"
         n2.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
@@ -751,17 +861,27 @@ final class BubblePackEditorViewController: UIViewController,
         let tip2 = UILabel()
         tip2.text = "点气泡放图"
         tip2.font = UIFont.systemFont(ofSize: 11)
+        tip2.alpha = 0.65
+        let leftR = UIStackView(arrangedSubviews: [back2, more2])
+        leftR.axis = .horizontal
+        leftR.spacing = 0
+        leftR.alignment = .center
         let navR = UIStackView(arrangedSubviews: [tip2])
         navR.axis = .horizontal
         nav.translatesAutoresizingMaskIntoConstraints = false
         nav.addSubview(n2)
+        nav.addSubview(leftR)
         nav.addSubview(navR)
         n2.translatesAutoresizingMaskIntoConstraints = false
+        leftR.translatesAutoresizingMaskIntoConstraints = false
         navR.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             nav.heightAnchor.constraint(equalToConstant: 44),
             n2.centerXAnchor.constraint(equalTo: nav.centerXAnchor),
             n2.centerYAnchor.constraint(equalTo: nav.centerYAnchor),
+            leftR.leadingAnchor.constraint(equalTo: nav.leadingAnchor, constant: 12),
+            leftR.topAnchor.constraint(equalTo: nav.topAnchor),
+            leftR.bottomAnchor.constraint(equalTo: nav.bottomAnchor),
             navR.trailingAnchor.constraint(equalTo: nav.trailingAnchor, constant: -12),
             navR.centerYAnchor.constraint(equalTo: nav.centerYAnchor),
         ])
@@ -784,6 +904,9 @@ final class BubblePackEditorViewController: UIViewController,
         let bx = UIView()
         bx.layer.cornerRadius = 5
         bx.layer.borderWidth = 1
+        bx.backgroundColor = c("wxInputBg")
+        bx.layer.borderColor = c("wxNavLine").cgColor
+        bx.heightAnchor.constraint(equalToConstant: 32).isActive = true
         bx.setContentHuggingPriority(UILayoutPriority(1), for: .horizontal)
         ir.addArrangedSubview(bx)
         ir.addArrangedSubview(wxInputChip("表情"))
@@ -813,6 +936,8 @@ final class BubblePackEditorViewController: UIViewController,
             inBar.bottomAnchor.constraint(equalTo: otherCard.bottomAnchor),
         ])
         contentStack.addArrangedSubview(otherCard)
+        otherNav = nav
+        otherInBar = inBar
     }
 
     // MARK: - 构建气泡
@@ -918,7 +1043,6 @@ final class BubblePackEditorViewController: UIViewController,
             guard let self else { return }
             let theme = night ? "night" : "day"
             let it = self.state["\(slot.identifier)|\(theme)"]
-            self.colorBubble(bub, slot: slot, night: night)
             if let it {
                 let sc = self.scaleValue(w: it.w, h: it.h)
                 let dw = it.w != 0 ? it.w / sc : 60
@@ -931,6 +1055,8 @@ final class BubblePackEditorViewController: UIViewController,
                 bub.showEmpty(withText: txt)
                 fn.text = self.outName(slot, theme: theme)
             }
+            // 先放图/放空，再着色：边框只画在空心气泡上，放图后由 showImage 清掉。
+            self.colorBubble(bub, slot: slot, night: night)
             fn.textColor = self.c("text2")
         }
 
@@ -970,15 +1096,16 @@ final class BubblePackEditorViewController: UIViewController,
                           : bubbleColor(hex: arr?[i] ?? "#000000")
             let tx = mask ? bubbleColor(hex: night ? "#e9ebee" : "#1b1d20")
                           : bubbleColor(hex: arr?[ti] ?? "#000000")
-            let border: UIColor? = mask ? bubbleColor(hex: night ? "#565c66" : "#b6bdc6") : nil
             if bub.imageView.isHidden {
                 bub.backgroundColor = bg
-                if let border {
-                    bub.layer.borderWidth = 1.5
-                    bub.layer.borderColor = border.cgColor
+                if mask {
+                    bub.setDashedBorder(bubbleColor(hex: night ? "#565c66" : "#b6bdc6"), width: 1.0)
                 } else {
-                    bub.layer.borderWidth = 0
+                    // 网页版其它气泡空心时也有虚线边框（旧代码这里是没边框）。
+                    bub.setDashedBorder(bubbleColor(hex: night ? "#6a7079" : "#c2c7cd"), width: 1.5)
                 }
+            } else {
+                bub.setDashedBorder(nil)
             }
             bub.tailColor = bg
             bub.placeholder.textColor = tx
@@ -988,9 +1115,9 @@ final class BubblePackEditorViewController: UIViewController,
         let bg = slot.side == .sender
             ? (night ? c("mineNight") : c("mine"))
             : (night ? c("bubNight") : c("bub"))
-        // 注意：ObjC 版这里夜间边框用的是 "bubLine"，它不在两套颜色表里，
-        // c() 因此回落黑色 —— 这里照原样保留（不“修”成别的色）
-        let border = night ? c("bubLine") : bubbleColor(hex: "#c2c7cd")
+        // 网页版空心边框：日间 #c2c7cd、夜间 #6a7079（虚线，见 setDashedBorder）。
+        // ObjC 版夜间用的 "bubLine" 不在颜色表里，c() 会回落黑色 —— 不再照搬。
+        let border = night ? bubbleColor(hex: "#6a7079") : bubbleColor(hex: "#c2c7cd")
         bub.applyBubbleColor(bg, border: border)
         bub.placeholder.textColor = UIColor(white: night ? 0.6 : 0.45, alpha: 1)
     }
@@ -1026,6 +1153,32 @@ final class BubblePackEditorViewController: UIViewController,
                 }
             }
         }
+
+        // 其它气泡卡的手机框跟主框走同一套日间/夜间（网页版两个框都变色；旧代码只刷了主框，
+        // 其它框的导航、聊天底、输入栏全停在初始色，夜间尤其明显）。
+        otherNav.backgroundColor = navBg
+        otherNav.layer.borderColor = navLine.cgColor
+        recolorNavLabels(otherNav)
+        otherChatStack.backgroundColor = night ? c("chatNight") : c("chat")
+        otherInBar.backgroundColor = navBg
+        otherInBar.layer.borderColor = navLine.cgColor
+        for v in otherInBar.subviews {
+            guard let stack = v as? UIStackView else { continue }
+            for x in stack.arrangedSubviews {
+                if let label = x as? UILabel {
+                    label.textColor = c("wxIc")
+                    label.layer.borderColor = c("wxIc").cgColor
+                } else if x.layer.borderWidth > 0 {
+                    x.layer.borderColor = c("wxNavLine").cgColor
+                    x.backgroundColor = c("wxInputBg")
+                }
+            }
+        }
+        // 主聊天区的时间（下午 8:07）跟随手机日间/夜间（网页版 .chattime 用 wx-time，夜间框再压一层）。
+        let wxTime = night ? bubbleColor(hex: "#6b6b70") : c("wxTime")
+        for v in chatStack.arrangedSubviews {
+            if let label = v as? UILabel { label.textColor = wxTime }
+        }
     }
 
     // MARK: - 主题与文件名 / 倍数
@@ -1043,22 +1196,17 @@ final class BubblePackEditorViewController: UIViewController,
         toolbar.backgroundColor = c("card")
         toolbar.layer.borderColor = c("line").cgColor
         for v in toolbarFlow.subviews {
-            guard let group = v as? UIStackView else { continue }
+            guard let group = v as? GroupContainer else { continue }
             group.backgroundColor = c("bg")
-            for sub in group.arrangedSubviews {
-                if let label = sub as? UILabel {
-                    label.textColor = c("text3")
-                }
-                if let pills = sub as? PillGroup {
-                    pills.refreshColors(accent: c("accent"), plain: c("text2"))
-                }
-            }
+            group.label.textColor = c("text3")
+            group.refreshPillColors(accent: c("accent"), plain: c("text2"))
         }
         for b in [batchBtn, copyBtn, clearBtn] {
             b?.layer.borderColor = c("line").cgColor
             b?.setTitleColor(c("text2"), for: .normal)
         }
         exportBtn.backgroundColor = c("accent")
+        exportBtn.layer.shadowColor = c("accent").cgColor
 
         summaryLabel.textColor = c("text2")
         progressBar.backgroundColor = c("line")
@@ -1070,6 +1218,10 @@ final class BubblePackEditorViewController: UIViewController,
         otherToggle.setTitleColor(c("accent"), for: .normal)
         otherCard.backgroundColor = c("card")
         otherCard.layer.borderColor = c("line").cgColor
+        // 其它区组标题（红包/转账/…）跟随页面主题的 wx-time 色（网页版 .grouptitle）。
+        for v in otherChatStack.arrangedSubviews {
+            if let label = v as? UILabel { label.textColor = c("wxTime") }
+        }
     }
 
     // scaleOpt：0 自动 1 不写 2 @2x 3 @3x。分段顺序是 自动/@3x/@2x/不写，
