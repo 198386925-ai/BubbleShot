@@ -87,15 +87,13 @@ final class BubbleShotUITests: XCTestCase {
         sleep(1)
         shot("05-placed")
 
-        // 6. Scrolled to the bottom: keep swiping past the toggle to the
-        // actual page bottom (other card), so the tab bar + note are in frame.
+        // 6. Scrolled to the bottom of the COLLAPSED page: the toggle is the
+        // last content, with the note just above it. Shoot as soon as the
+        // toggle is hittable — extra swipes after that overshoot past it
+        // (run 3's extra swipes landed on a frame with neither toggle nor
+        // bottom, just the note + tab bar).
         let otherBottom = app.buttons["红包 / 语音 / 卡片等其它气泡（32 个，可选项）"]
         XCTAssertTrue(scrollUntilHittable(otherBottom, up: true), "bottom of page never reached")
-        app.swipeUp()
-        sleep(1)
-        app.swipeUp()
-        sleep(1)
-        app.swipeUp()
         sleep(1)
         shot("06-bottom")
     }
